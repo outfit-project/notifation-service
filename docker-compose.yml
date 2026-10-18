@@ -1,0 +1,4 @@
+name: vestis
+include:
+  - path: ../../docker-compose.yml
+    env_file: ../../.env
