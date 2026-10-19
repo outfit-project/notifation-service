@@ -2,7 +2,25 @@
 
 Consumes auth verification events from a Redis stream and delivers text/HTML email through SMTP. A FastAPI lifespan runs the consumer; its HTTP surface contains health endpoints only.
 
-[Project overview](../../README.md) · [Auth producer](../auth-service/README.md) · [SMTP deployment](../../DEPLOY.md)
+[Auth producer](https://github.com/outfit-project/auth-service) · [Run all services](https://github.com/outfit-project/api-gateway#run-all-repositories)
+
+## Start this repository
+
+Requirements: Docker with Compose 2.20+. From this repository:
+
+```bash
+cp .env.example .env
+docker network create vestis-services
+docker compose up --build -d --wait --wait-timeout 120
+```
+
+PowerShell also supports `cp`. Copy the example only for initial setup; reconcile an existing `.env` instead of replacing it. Create the shared network once; skip creation if it already exists. `VESTIS_NETWORK` can select another pre-created network.
+
+This starts notification, its own persistent Redis and Mailpit without any parent files or other checkouts. Open `http://localhost:8004/health/ready` and the inbox at `http://localhost:8025`. With the default empty Redis, the worker waits for events. `docker compose down` preserves mail and queue data.
+
+To deliver auth registration codes, start auth on the same network, change notification's `.env` to `REDIS_URL=redis://vestis-auth-redis:6379/0`, match auth's `MAIL_STREAM`, and run `docker compose up -d`. The local Redis remains available for isolated tests, but connected mode consumes auth's queue. Mailpit captures mail locally; it does not forward messages to a real inbox.
+
+The notification API is available to the gateway at `notification:8000`. `NOTIFICATION_PORT` and `MAILPIT_PORT` change the host ports if needed.
 
 ## Event and delivery contract
 
@@ -32,7 +50,7 @@ Settings: [app/core/config.py](app/core/config.py), with a local [.env.example](
 
 | Variable | Value / purpose |
 | --- | --- |
-| `REDIS_URL` | Compose: `redis://auth-redis:6379/0` |
+| `REDIS_URL` | Isolated: `redis://notification-redis:6379/0`; with auth: `redis://vestis-auth-redis:6379/0` |
 | `MAIL_STREAM` | `mail:outbox`; same as auth |
 | `MAIL_GROUP` | Compose: `notifications`; application default: `notification` |
 | `MAIL_CONSUMER` | Generated hostname/UUID identity unless set |
@@ -46,34 +64,40 @@ Settings: [app/core/config.py](app/core/config.py), with a local [.env.example](
 
 For a real provider, use its authorized sender, host, port and credentials. Enable STARTTLS (often port 587) or implicit TLS (often 465) as required. TLS verifies certificates using system trust. Mailpit captures messages; it does not forward them to external recipients. External SMTP/TLS has not been exercised in the local verification record.
 
-Root `.env` values are passed only where referenced by Compose. Add worker-specific tuning values to the service environment or an override.
+The repository's `.env` configures the explicit environment in its own Compose file. SMTP and retry settings in the table are forwarded. For a fixed `MAIL_CONSUMER`, add it to the service environment; otherwise each instance generates its own identity.
 
 ## Run and inspect
 
-From the project root:
+From this repository:
 
 ```bash
-python scripts/setup.py
-docker compose up --build -d --wait --wait-timeout 900
+docker compose ps
 docker compose logs -f notification
-curl http://localhost:8080/health/notification
-docker compose exec -T auth-redis redis-cli XPENDING mail:outbox notifications
-docker compose exec -T auth-redis redis-cli XLEN mail:outbox:dead
+curl http://localhost:8004/health/ready
+docker compose exec -T notification-redis redis-cli XPENDING mail:outbox notifications
+docker compose exec -T notification-redis redis-cli XLEN mail:outbox:dead
 ```
 
-Open the local inbox at `http://localhost:8025`, then register through the app to generate real email. Inspect dead-letter reasons locally with `XRANGE mail:outbox:dead - + COUNT 10`; avoid publishing source-stream contents, which contain verification codes and recipients.
+The Redis commands above inspect isolated mode. For connected mode run the corresponding commands against `auth-redis` from the auth repository. Open Mailpit, then register through auth or the web app to generate mail. Inspect dead-letter reasons with `XRANGE mail:outbox:dead - + COUNT 10`; source-stream contents contain verification codes and recipients.
+
+To exercise isolated delivery with a synthetic event (Bash or PowerShell):
+
+```bash
+docker compose exec -T notification-redis redis-cli XADD mail:outbox '*' type verify_code email demo@example.com code 123456
+```
+
+The message should appear in Mailpit. This synthetic code is not an auth registration code.
 
 Uvicorn listens internally on port 8000. `GET /health/live` checks the HTTP process. `GET /health/ready` checks Redis, consumer initialization and a live worker task. SMTP availability is excluded, allowing retries during provider outages. On shutdown the consumer stops reading and waits for active delivery before closing Redis.
 
-For native development, configure host-reachable Redis/SMTP addresses, then run `uvicorn app.main:app --host 0.0.0.0 --port 8000` here. Root Compose does not publish Redis/SMTP ports to the host.
+For native development, configure host-reachable Redis/SMTP addresses, then run `uvicorn app.main:app --host 0.0.0.0 --port 8000` here. Compose does not publish Redis/SMTP ports to the host.
 
 ## Checks
 
-In an isolated Python 3.12 environment, from the project root:
+In an isolated Python 3.12 environment, from this repository:
 
 ```bash
-python -m pip install -r backend/notification-service/requirements.txt -r requirements-test.txt
-cd backend/notification-service
+python -m pip install -r requirements-dev.txt
 python -m pytest -q
 python -m compileall -q app
 ```

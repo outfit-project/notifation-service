@@ -1,4 +1,60 @@
-name: vestis
-include:
-  - path: ../../docker-compose.yml
-    env_file: ../../.env
+name: vestis-notification
+
+services:
+  notification:
+    build: .
+    ports: ["127.0.0.1:${NOTIFICATION_PORT:-8004}:8000"]
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://notification-redis:6379/0}
+      MAIL_STREAM: ${MAIL_STREAM:-mail:outbox}
+      MAIL_GROUP: ${MAIL_GROUP:-notifications}
+      MAIL_MAX_ATTEMPTS: ${MAIL_MAX_ATTEMPTS:-5}
+      MAIL_RETRY_IDLE_MS: ${MAIL_RETRY_IDLE_MS:-60000}
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-false}
+      SMTP_TIMEOUT: ${SMTP_TIMEOUT:-10}
+      MAIL_FROM: ${MAIL_FROM:-Vestis <hello@vestis.local>}
+    depends_on:
+      notification-redis: {condition: service_healthy}
+      mailpit: {condition: service_started}
+    networks: [default, vestis]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+  notification-redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, "yes"]
+    volumes: [mail-redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports: ["127.0.0.1:${MAILPIT_PORT:-8025}:8025"]
+    environment:
+      MP_DATABASE: /data/mailpit.db
+      MP_MAX_MESSAGES: "200"
+    volumes: [mail-data:/data]
+    restart: unless-stopped
+
+networks:
+  vestis:
+    external: true
+    name: ${VESTIS_NETWORK:-vestis-services}
+
+volumes:
+  mail-redis-data:
+  mail-data:
